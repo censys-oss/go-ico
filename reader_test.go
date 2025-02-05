@@ -27,15 +27,15 @@ func TestDecodeAll(t *testing.T) {
 		assert.NoError(err, f)
 
 		r := bytes.NewReader(icoData)
-		ic, err := DecodeAll(r)
+		ic, err := Decode(r)
 		assert.NoError(err, f)
 		if err != nil {
 			continue
 		}
 
-		for i, im := range ic.Image {
+		for i, im := range ic {
 			var jpgName string
-			if len(ic.Image) == 1 {
+			if len(ic) == 1 {
 				jpgName = f + ".jpg"
 			} else {
 				jpgName = f + fmt.Sprintf("-%d.jpg", i)

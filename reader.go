@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -27,12 +28,39 @@ type reader interface {
 	io.ByteReader
 }
 
+var ErrMemoryLimitExceeded = errors.New("memory limit exceeded during ICO decoding")
+
 type decoder struct {
-	r     reader
-	num   uint16
-	dir   []entry
-	image []image.Image
-	cfg   image.Config
+	r                            reader
+	num                          uint16
+	dir                          []entry
+	image                        []image.Image
+	cfg                          image.Config
+	memoryLimit, allocatedMemory uint32
+}
+
+type DecodeOptions struct {
+	// max bytes allowed to allocate
+	memoryLimit uint32
+}
+
+type DecodeOptFunc func(*DecodeOptions)
+
+// WithMemoryLimit sets memory limit
+func WithMemoryLimit(limit uint32) DecodeOptFunc {
+	return func(o *DecodeOptions) {
+		o.memoryLimit = max(o.memoryLimit, limit)
+	}
+}
+
+func (d *decoder) allocMemory(size uint32) ([]byte, error) {
+	if d.memoryLimit > 0 {
+		if d.allocatedMemory+size > d.memoryLimit {
+			return nil, ErrMemoryLimitExceeded
+		}
+		d.allocatedMemory += size
+	}
+	return make([]byte, size), nil
 }
 
 func (d *decoder) decode(r io.Reader, configOnly bool) error {
@@ -56,6 +84,8 @@ func (d *decoder) decode(r io.Reader, configOnly bool) error {
 		}
 		d.cfg = cfg
 	} else {
+		// d.num is upper bounded by 65k
+		// not going to account for this in allocs
 		d.image = make([]image.Image, d.num)
 		for i, entry := range d.dir {
 			img, err := d.parseImage(entry)
@@ -79,6 +109,9 @@ func (d *decoder) readHeader() error {
 	if second != 1 {
 		return FormatError(fmt.Sprintf("second byte is %d instead of 1", second))
 	}
+	if d.num == 0 {
+		return FormatError(fmt.Sprintf("third byte is %d, implying 0 images", d.num))
+	}
 	return nil
 }
 
@@ -99,7 +132,10 @@ func (d *decoder) readImageDir(configOnly bool) error {
 }
 
 func (d *decoder) parseImage(e entry) (image.Image, error) {
-	data := make([]byte, e.Size)
+	data, err := d.allocMemory(e.Size)
+	if err != nil {
+		return nil, fmt.Errorf("failed to allocate image buffer: %w", err)
+	}
 	io.ReadFull(d.r, data)
 
 	// Check if the image is a PNG by the first 8 bytes of the image data
@@ -150,10 +186,13 @@ func (d *decoder) parseImage(e entry) (image.Image, error) {
 }
 
 func (d *decoder) parseConfig(e entry) (cfg image.Config, err error) {
-	tmp := make([]byte, e.Size)
+	tmp, err := d.allocMemory(e.Size)
+	if err != nil {
+		return cfg, fmt.Errorf("failed to allocate image buffer: %w", err)
+	}
 	n, err := io.ReadFull(d.r, tmp)
 	if n != int(e.Size) {
-		return cfg, fmt.Errorf("Only %d of %d bytes read.", n, e.Size)
+		return cfg, fmt.Errorf("only %d of %d bytes read", n, e.Size)
 	}
 	if err != nil {
 		return cfg, err
@@ -174,29 +213,36 @@ func (d *decoder) setupBMP(e entry, data []byte) ([]byte, []byte, int, error) {
 
 	// calculate image sizes
 	// See wikipedia en.wikipedia.org/wiki/BMP_file_format
-	var imageSize, maskSize int
+	var imageSize, maskSize uint32
 	if int(e.Size) < len(data) {
-		imageSize = int(e.Size)
+		imageSize = uint32(e.Size)
 	} else {
-		imageSize = len(data)
+		imageSize = uint32(len(data))
 	}
 	if e.Bits != 32 {
-		rowSize := (1 * (int(e.Width) + 31) / 32) * 4
-		maskSize = rowSize * int(e.Height)
+		rowSize := (1 * (uint32(e.Width) + 31) / 32) * 4
+		maskSize = rowSize * uint32(e.Height)
 		imageSize -= maskSize
 	}
 
-	img := make([]byte, 14+imageSize)
-	mask := make([]byte, maskSize)
+	img, err := d.allocMemory(14 + imageSize)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("failed to allocate image buffer: %w", err)
+	}
 
-	var n int
+	mask, err := d.allocMemory(maskSize)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("failed to allocate mask buffer: %w", err)
+	}
+
+	var n uint32
 	// Read in image
-	n = copy(img[14:], data[:imageSize])
+	n = uint32(copy(img[14:], data[:imageSize]))
 	if n != imageSize {
 		return nil, nil, 0, FormatError(fmt.Sprintf("only %d of %d bytes read.", n, imageSize))
 	}
 	// Read in mask
-	n = copy(mask, data[imageSize:])
+	n = uint32(copy(mask, data[imageSize:]))
 	if n != maskSize {
 		return nil, nil, 0, FormatError(fmt.Sprintf("only %d of %d bytes read.", n, maskSize))
 	}
@@ -259,24 +305,21 @@ func (d *decoder) setupBMP(e entry, data []byte) ([]byte, []byte, int, error) {
 	return img, mask, int(offset), nil
 }
 
-func Decode(r io.Reader) (image.Image, error) {
+func Decode(r io.Reader, opts ...DecodeOptFunc) ([]image.Image, error) {
 	var d decoder
+	options := DecodeOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+	d.memoryLimit = options.memoryLimit
 	if err := d.decode(r, false); err != nil {
 		return nil, err
 	}
-	return d.image[0], nil
+	return d.image, nil
 }
 
-func DecodeAll(r io.Reader) (*ICO, error) {
-	var d decoder
-	if err := d.decode(r, false); err != nil {
-		return nil, err
-	}
-	ico := &ICO{
-		Num:   int(d.num),
-		Image: d.image,
-	}
-	return ico, nil
+func DecodeImg(r io.Reader) ([]image.Image, error) {
+	return Decode(r)
 }
 
 func DecodeConfig(r io.Reader) (image.Config, error) {
@@ -288,5 +331,12 @@ func DecodeConfig(r io.Reader) (image.Config, error) {
 }
 
 func init() {
-	image.RegisterFormat("ico", "", Decode, DecodeConfig)
+	image.RegisterFormat("ico", "", func(r io.Reader) (image.Image, error) {
+		imgs, err := Decode(r)
+		if err != nil {
+			return nil, err
+		}
+		// we will error if there are no images
+		return imgs[0], nil
+	}, DecodeConfig)
 }
