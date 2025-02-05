@@ -8,7 +8,7 @@ A library for parsing and working with `.ico` image files. Compatible with Go’
 ## Installation
 
 ```
-go get github.com/dkua/go-ico
+go get github.com/censys-oss/go-ico
 ```
 
 ## Dependencies
