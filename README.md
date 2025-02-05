@@ -3,6 +3,8 @@ go-ico
 
 A library for parsing and working with `.ico` image files. Compatible with Go’s standard `image` library. Handles potentially adversarial images without panicking and has a decode option for limiting memory.
 
+If you have an ICO that works with a different library but fails to decode with this one, please open a ticket and upload that ICO.
+
 ## Installation
 
 ```

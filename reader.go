@@ -4,18 +4,18 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/png"
 	"io"
+	"strings"
 
 	bmp "github.com/jsummers/gobmp"
 )
 
-const pngHeader = "\x89PNG\r\n\x1a\n"
+const PngHeader = "\x89PNG\r\n\x1a\n"
 
 // A FormatError reports that the input is not a valid ICO.
 type FormatError string
@@ -28,7 +28,7 @@ type reader interface {
 	io.ByteReader
 }
 
-var ErrMemoryLimitExceeded = errors.New("memory limit exceeded during ICO decoding")
+var ErrMemoryLimitExceeded = FormatError("memory limit exceeded during ICO decoding")
 
 type decoder struct {
 	r                            reader
@@ -98,20 +98,28 @@ func (d *decoder) decode(r io.Reader, configOnly bool) error {
 	return nil
 }
 
+type Header struct {
+	First, Second, Num uint16
+}
+
 func (d *decoder) readHeader() error {
-	var first, second uint16
-	binary.Read(d.r, binary.LittleEndian, &first)
-	binary.Read(d.r, binary.LittleEndian, &second)
-	binary.Read(d.r, binary.LittleEndian, &d.num)
-	if first != 0 {
-		return FormatError(fmt.Sprintf("first byte is %d instead of 0", first))
+
+	h := Header{}
+	err := binary.Read(d.r, binary.LittleEndian, &h)
+	if err != nil {
+		return FormatError(fmt.Sprintf("failed to read first 6 bytes/header: %v", err))
 	}
-	if second != 1 {
-		return FormatError(fmt.Sprintf("second byte is %d instead of 1", second))
+
+	if h.First != 0 {
+		return FormatError(fmt.Sprintf("first 2 bytes is %d instead of 0", h.First))
 	}
-	if d.num == 0 {
-		return FormatError(fmt.Sprintf("third byte is %d, implying 0 images", d.num))
+	if h.Second != 1 {
+		return FormatError(fmt.Sprintf("second 2 bytes is %d instead of 1", h.Second))
 	}
+	if h.Num == 0 {
+		return FormatError(fmt.Sprintf("third 2 bytes is %d, implying 0 images", d.num))
+	}
+	d.num = h.Num
 	return nil
 }
 
@@ -134,12 +142,14 @@ func (d *decoder) readImageDir(configOnly bool) error {
 func (d *decoder) parseImage(e entry) (image.Image, error) {
 	data, err := d.allocMemory(e.Size)
 	if err != nil {
-		return nil, fmt.Errorf("failed to allocate image buffer: %w", err)
+		return nil, FormatError(fmt.Sprintf("failed to allocate image buffer: %v", err))
 	}
-	io.ReadFull(d.r, data)
+	// sometimes e.Size is larger than the data
+	// permissively handle this
+	_, _ = io.ReadFull(d.r, data)
 
 	// Check if the image is a PNG by the first 8 bytes of the image data
-	if string(data[:len(pngHeader)]) == pngHeader {
+	if strings.HasPrefix(string(data), PngHeader) {
 		return png.Decode(bytes.NewReader(data))
 	}
 
@@ -157,15 +167,20 @@ func (d *decoder) parseImage(e entry) (image.Image, error) {
 	bnd := src.Bounds()
 	mask := image.NewAlpha(image.Rect(0, 0, bnd.Dx(), bnd.Dy()))
 	dst := image.NewNRGBA(image.Rect(0, 0, bnd.Dx(), bnd.Dy()))
-	//draw.Draw(dst, dst.Bounds(), img, b.Min, draw.Src)
-	//Fill in mask from the ICO file's AND mask data
+	// Fill in mask from the ICO file's AND mask data
 	rowSize := ((int(e.Width) + 31) / 32) * 4
 	b := make([]byte, 4)
-	_, _ = offset, b
+	imageRowSize := ((int(e.Bits)*int(e.Width) + 31) / 32) * 4
+	if e.Bits == 32 && offset+int(e.Height-1)*int(imageRowSize)+int(e.Width-1)*4 > len(bmpBytes) {
+		return nil,
+			FormatError(
+				"failed to parse image, offset+r*imageRowSize+c*4 exceeds bmpBytes len")
+	}
+
 	for r := 0; r < int(e.Height); r++ {
 		for c := 0; c < int(e.Width); c++ {
-			_, _ = maskBytes, rowSize
 			if len(maskBytes) > 0 {
+				// always safe, see size of maskBytes in setupBMP
 				alpha := (maskBytes[r*rowSize+c/8] >> (1 * (7 - uint(c)%8))) & 0x01
 				if alpha != 1 {
 					mask.SetAlpha(c, int(e.Height)-r-1, color.Alpha{255})
@@ -174,8 +189,10 @@ func (d *decoder) parseImage(e entry) (image.Image, error) {
 			}
 			// 32 bit bmps do hacky things with an alpha channel, it's included as the 4th byte of the colors
 			if e.Bits == 32 {
-				imageRowSize := ((int(e.Bits)*int(e.Width) + 31) / 32) * 4
-				io.ReadFull(bytes.NewReader(bmpBytes[offset+r*imageRowSize+c*4:]), b)
+				_, err = io.ReadFull(bytes.NewReader(bmpBytes[offset+r*imageRowSize+c*4:]), b)
+				if err != nil {
+					return nil, err
+				}
 				mask.SetAlpha(c, int(e.Height)-r-1, color.Alpha{b[3]})
 			}
 		}
@@ -188,11 +205,11 @@ func (d *decoder) parseImage(e entry) (image.Image, error) {
 func (d *decoder) parseConfig(e entry) (cfg image.Config, err error) {
 	tmp, err := d.allocMemory(e.Size)
 	if err != nil {
-		return cfg, fmt.Errorf("failed to allocate image buffer: %w", err)
+		return cfg, FormatError(fmt.Sprintf("failed to allocate image buffer: %v", err))
 	}
 	n, err := io.ReadFull(d.r, tmp)
 	if n != int(e.Size) {
-		return cfg, fmt.Errorf("only %d of %d bytes read", n, e.Size)
+		return cfg, FormatError(fmt.Sprintf("only %d of %d bytes read", n, e.Size))
 	}
 	if err != nil {
 		return cfg, err
@@ -208,31 +225,39 @@ func (d *decoder) parseConfig(e entry) (cfg image.Config, err error) {
 
 func (d *decoder) setupBMP(e entry, data []byte) ([]byte, []byte, int, error) {
 	// Ico files are made up of a XOR mask and an AND mask
-	// The XOR mask is the image itself, while the AND mask is a 1 bit-per-pixel alpha channel.
+	// The XOR mask is the image itself, while the AND mask is a 1 bit-per-pixel alpha channel (transparent or opaque).
 	// setupBMP returns the image as a BMP format byte array, and the mask as a (1bpp) pixel array
 
 	// calculate image sizes
 	// See wikipedia en.wikipedia.org/wiki/BMP_file_format
 	var imageSize, maskSize uint32
-	if int(e.Size) < len(data) {
-		imageSize = uint32(e.Size)
-	} else {
-		imageSize = uint32(len(data))
-	}
+	imageSize = min(uint32(len(data)), e.Size)
 	if e.Bits != 32 {
 		rowSize := (1 * (uint32(e.Width) + 31) / 32) * 4
 		maskSize = rowSize * uint32(e.Height)
+		if maskSize > imageSize {
+			return nil, nil, 0, FormatError("masksize exceeds image size")
+		}
 		imageSize -= maskSize
+	}
+
+	if len(data) < int(imageSize) {
+		return nil, nil, 0, FormatError(
+			fmt.Sprintf("datalen %d smaller than imageSize %d", len(data), imageSize))
+	}
+
+	if 14+imageSize < 50 {
+		return nil, nil, 0, FormatError(fmt.Sprintf("imagesize too small: %d", imageSize))
 	}
 
 	img, err := d.allocMemory(14 + imageSize)
 	if err != nil {
-		return nil, nil, 0, fmt.Errorf("failed to allocate image buffer: %w", err)
+		return nil, nil, 0, FormatError(fmt.Sprintf("failed to allocate image buffer: %v", err))
 	}
 
 	mask, err := d.allocMemory(maskSize)
 	if err != nil {
-		return nil, nil, 0, fmt.Errorf("failed to allocate mask buffer: %w", err)
+		return nil, nil, 0, FormatError(fmt.Sprintf("failed to allocate mask buffer: %v", err))
 	}
 
 	var n uint32
@@ -247,11 +272,13 @@ func (d *decoder) setupBMP(e entry, data []byte) ([]byte, []byte, int, error) {
 		return nil, nil, 0, FormatError(fmt.Sprintf("only %d of %d bytes read.", n, maskSize))
 	}
 
-	var dibSize, w, h uint32
-	binary.Read(bytes.NewReader(img[14:14+4]), binary.LittleEndian, &dibSize)
-	binary.Read(bytes.NewReader(img[14+4:14+8]), binary.LittleEndian, &w)
-	binary.Read(bytes.NewReader(img[14+8:14+12]), binary.LittleEndian, &h)
+	// following slices will not panic due to image size check above
 
+	dibSize := binary.LittleEndian.Uint32(img[14 : 14+4])
+	w := binary.LittleEndian.Uint32(img[14+4 : 14+8])
+	h := binary.LittleEndian.Uint32(img[14+8 : 14+12])
+
+	// what case is this handling?
 	if h > w {
 		binary.LittleEndian.PutUint32(img[14+8:14+12], h/2)
 	}
@@ -263,16 +290,9 @@ func (d *decoder) setupBMP(e entry, data []byte) ([]byte, []byte, int, error) {
 	binary.LittleEndian.PutUint32(img[2:6], uint32(imageSize+14))
 
 	// Calculate offset into image data
-	var numColors uint32
-	binary.Read(bytes.NewReader(img[14+32:14+36]), binary.LittleEndian, &numColors)
-
-	var bpp uint16
-	binary.Read(bytes.NewReader(img[14+14:14+16]), binary.LittleEndian, &bpp)
-	e.Bits = bpp
-
-	var size uint32
-	binary.Read(bytes.NewReader(img[14+20:14+24]), binary.LittleEndian, &size)
-	e.Size = size
+	numColors := binary.LittleEndian.Uint32(img[14+32 : 14+36])
+	e.Bits = binary.LittleEndian.Uint16(img[14+14 : 14+16])
+	e.Size = binary.LittleEndian.Uint32(img[14+20 : 14+24])
 
 	switch int(e.Bits) {
 	case 1, 2, 4, 8:
@@ -296,9 +316,12 @@ func (d *decoder) setupBMP(e entry, data []byte) ([]byte, []byte, int, error) {
 	offset = 14 + dibSize + numColorsSize
 
 	if dibSize > 40 {
-		var iccSize uint32
-		binary.Read(bytes.NewReader(img[14+dibSize-8:14+dibSize-4]), binary.LittleEndian, &iccSize)
-		offset += iccSize
+		if 14+dibSize-4 > uint32(len(img)) {
+			return nil, nil, 0,
+				FormatError(fmt.Sprintf("cannot get icc with dibsize/imglen %d %d", dibSize, len(img)))
+		}
+		// icc
+		offset += binary.LittleEndian.Uint32(img[14+dibSize-8 : 14+dibSize-4])
 	}
 	binary.LittleEndian.PutUint32(img[10:14], offset)
 
