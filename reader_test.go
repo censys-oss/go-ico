@@ -43,3 +43,16 @@ func TestDecodeAll(t *testing.T) {
 		}
 	}
 }
+
+func TestMemoryLimit(t *testing.T) {
+	assert := assert.New(t)
+	files, _ := filepath.Glob("testdata/memorylimit/*.icob")
+	for _, f := range files {
+		icoData, err := os.ReadFile(f)
+		assert.NoError(err, f)
+
+		r := bytes.NewReader(icoData)
+		_, err = Decode(r, WithMemoryLimit(10_000_000))
+		assert.ErrorIs(err, ErrMemoryLimitExceeded)
+	}
+}

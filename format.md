@@ -10,8 +10,8 @@ This document describes the structure of the .ICO format (commonly stored in `.i
 
 A ico file has three main sections:
 
-1. The **icon directory header** (`ICONDIR`), which specifies that the file is an icon and how many images it contains.
-2. One or more **icon directory entries** (`ICONDIRENTRY`), each describing a sub-image.
+1. The **icon directory header** (`ICONDIR`), which specifies that the file is an icon and how many images it contains. 6 bytes.
+2. One or more **icon directory entries** (`ICONDIRENTRY`), each describing a sub-image.  16 bytes.
 3. The actual **image data** for each sub-image (in BMP or PNG format), at the end of the file.
 
 Conceptually, the structure looks like this:

@@ -142,7 +142,7 @@ func (d *decoder) readImageDir(configOnly bool) error {
 func (d *decoder) parseImage(e entry) (image.Image, error) {
 	data, err := d.allocMemory(e.Size)
 	if err != nil {
-		return nil, FormatError(fmt.Sprintf("failed to allocate image buffer: %v", err))
+		return nil, fmt.Errorf("failed to allocate data buffer: %w", err)
 	}
 	// sometimes e.Size is larger than the data
 	// permissively handle this
@@ -205,7 +205,7 @@ func (d *decoder) parseImage(e entry) (image.Image, error) {
 func (d *decoder) parseConfig(e entry) (cfg image.Config, err error) {
 	tmp, err := d.allocMemory(e.Size)
 	if err != nil {
-		return cfg, FormatError(fmt.Sprintf("failed to allocate image buffer: %v", err))
+		return cfg, fmt.Errorf("failed to allocate image buffer: %w", err)
 	}
 	n, err := io.ReadFull(d.r, tmp)
 	if n != int(e.Size) {
@@ -231,7 +231,7 @@ func (d *decoder) setupBMP(e entry, data []byte) ([]byte, []byte, int, error) {
 	// calculate image sizes
 	// See wikipedia en.wikipedia.org/wiki/BMP_file_format
 	var imageSize, maskSize uint32
-	imageSize = min(uint32(len(data)), e.Size)
+	imageSize = uint32(len(data))
 	if e.Bits != 32 {
 		rowSize := (1 * (uint32(e.Width) + 31) / 32) * 4
 		maskSize = rowSize * uint32(e.Height)
@@ -252,12 +252,12 @@ func (d *decoder) setupBMP(e entry, data []byte) ([]byte, []byte, int, error) {
 
 	img, err := d.allocMemory(14 + imageSize)
 	if err != nil {
-		return nil, nil, 0, FormatError(fmt.Sprintf("failed to allocate image buffer: %v", err))
+		return nil, nil, 0, fmt.Errorf("failed to allocate image buffer: %w", err)
 	}
 
 	mask, err := d.allocMemory(maskSize)
 	if err != nil {
-		return nil, nil, 0, FormatError(fmt.Sprintf("failed to allocate mask buffer: %v", err))
+		return nil, nil, 0, fmt.Errorf("failed to allocate mask buffer: %w", err)
 	}
 
 	var n uint32
