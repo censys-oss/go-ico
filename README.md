@@ -3,8 +3,6 @@ go-ico
 
 A library for parsing and working with `.ico` image files. Compatible with Go’s standard `image` library.
 
-*NOTE: This library is not being maintained and might not fully work anymore.*
-
 ## Installation
 
 ```
