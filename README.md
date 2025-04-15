@@ -1,14 +1,14 @@
 go-ico
 ======
 
-A library for parsing and working with `.ico` image files. Compatible with Go’s standard `image` library.
+A library for parsing and working with `.ico` image files. Compatible with Go’s standard `image` library. Handles potentially adversarial images without panicking and has a decode option for limiting memory.
 
-*NOTE: This library is not being maintained and might not fully work anymore.*
+If you have an ICO that works with a different library but fails to decode with this one, please open a ticket and upload that ICO.
 
 ## Installation
 
 ```
-go get github.com/dkua/go-ico
+go get github.com/censys-oss/go-ico
 ```
 
 ## Dependencies
@@ -25,15 +25,17 @@ if err != nil {
 }
 defer reader.Close()
 
-// To decode and return the first (and usually largest) image of an .ico image
-image, err := Decode(r)  // image is of image.Image type
+// To decode and return all images
+images, err := Decode(r)  // images is of []image.Image type
 if err != nil {
         log.Fatal(err)
 }
 
-// To decode and return all the images of an .ico image
-ic, err := DecodeAll(r)  // ic is a custom ico.ICO containing an array of image.Image
+// To decode, with memory limits
+image, err := Decode(r, WithMemoryLimit(10_000_000))
 if err != nil {
         log.Fatal(err)
 }
+
+// 
 ```

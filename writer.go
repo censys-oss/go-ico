@@ -151,14 +151,20 @@ func Encode(w io.Writer, m image.Image) error {
 	if err = bmp.Encode(wr, e.m); err != nil {
 		return err
 	}
-	wr.Flush()
+	err = wr.Flush()
+	if err != nil {
+		return err
+	}
 
 	if n := buf.Next(14); len(n) != 14 {
 		return fmt.Errorf("image not proper size")
 	} else {
 		fmt.Println(n)
 		var fSize uint32
-		binary.Read(bytes.NewReader(n[2:6]), binary.LittleEndian, &fSize)
+		err = binary.Read(bytes.NewReader(n[2:6]), binary.LittleEndian, &fSize)
+		if err != nil {
+			return err
+		}
 		fmt.Println("fSize", fSize)
 	}
 	b := buf.Bytes()
