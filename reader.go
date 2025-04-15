@@ -16,6 +16,9 @@ import (
 )
 
 const PngHeader = "\x89PNG\r\n\x1a\n"
+// 
+const BmpFileHeaderSize = 14
+const BmpDibHeaderSize = 40
 
 // A FormatError reports that the input is not a valid ICO.
 type FormatError string
@@ -171,6 +174,8 @@ func (d *decoder) parseImage(e entry) (image.Image, error) {
 	rowSize := ((int(e.Width) + 31) / 32) * 4
 	b := make([]byte, 4)
 	imageRowSize := ((int(e.Bits)*int(e.Width) + 31) / 32) * 4
+	// guard against out of bounds access
+	// guards against case only hit in 32 bpp icos
 	if e.Bits == 32 && offset+int(e.Height-1)*int(imageRowSize)+int(e.Width-1)*4 > len(bmpBytes) {
 		return nil,
 			FormatError(
@@ -246,11 +251,11 @@ func (d *decoder) setupBMP(e entry, data []byte) ([]byte, []byte, int, error) {
 			fmt.Sprintf("datalen %d smaller than imageSize %d", len(data), imageSize))
 	}
 
-	if 14+imageSize < 50 {
+	if BmpFileHeaderSize+imageSize < 10+BmpDibHeaderSize {
 		return nil, nil, 0, FormatError(fmt.Sprintf("imagesize too small: %d", imageSize))
 	}
 
-	img, err := d.allocMemory(14 + imageSize)
+	img, err := d.allocMemory(BmpFileHeaderSize + imageSize)
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("failed to allocate image buffer: %w", err)
 	}
@@ -262,7 +267,7 @@ func (d *decoder) setupBMP(e entry, data []byte) ([]byte, []byte, int, error) {
 
 	var n uint32
 	// Read in image
-	n = uint32(copy(img[14:], data[:imageSize]))
+	n = uint32(copy(img[BmpFileHeaderSize:], data[:imageSize]))
 	if n != imageSize {
 		return nil, nil, 0, FormatError(fmt.Sprintf("only %d of %d bytes read.", n, imageSize))
 	}
@@ -274,25 +279,25 @@ func (d *decoder) setupBMP(e entry, data []byte) ([]byte, []byte, int, error) {
 
 	// following slices will not panic due to image size check above
 
-	dibSize := binary.LittleEndian.Uint32(img[14 : 14+4])
-	w := binary.LittleEndian.Uint32(img[14+4 : 14+8])
-	h := binary.LittleEndian.Uint32(img[14+8 : 14+12])
+	dibSize := binary.LittleEndian.Uint32(img[BmpFileHeaderSize : BmpFileHeaderSize+4])
+	w := binary.LittleEndian.Uint32(img[BmpFileHeaderSize+4 : BmpFileHeaderSize+8])
+	h := binary.LittleEndian.Uint32(img[BmpFileHeaderSize+8 : BmpFileHeaderSize+12])
 
 	// what case is this handling?
 	if h > w {
-		binary.LittleEndian.PutUint32(img[14+8:14+12], h/2)
+		binary.LittleEndian.PutUint32(img[BmpFileHeaderSize+8:BmpFileHeaderSize+12], h/2)
 	}
 
 	// Magic number
 	copy(img[0:2], "\x42\x4D")
 
 	// File size
-	binary.LittleEndian.PutUint32(img[2:6], uint32(imageSize+14))
+	binary.LittleEndian.PutUint32(img[2:6], uint32(imageSize+BmpFileHeaderSize))
 
 	// Calculate offset into image data
-	numColors := binary.LittleEndian.Uint32(img[14+32 : 14+36])
-	e.Bits = binary.LittleEndian.Uint16(img[14+14 : 14+16])
-	e.Size = binary.LittleEndian.Uint32(img[14+20 : 14+24])
+	numColors := binary.LittleEndian.Uint32(img[BmpFileHeaderSize+32 : BmpFileHeaderSize+36])
+	e.Bits = binary.LittleEndian.Uint16(img[BmpFileHeaderSize+14 : BmpFileHeaderSize+16])
+	e.Size = binary.LittleEndian.Uint32(img[BmpFileHeaderSize+20 : BmpFileHeaderSize+24])
 
 	switch int(e.Bits) {
 	case 1, 2, 4, 8:
@@ -313,15 +318,15 @@ func (d *decoder) setupBMP(e entry, data []byte) ([]byte, []byte, int, error) {
 	}
 
 	var offset uint32
-	offset = 14 + dibSize + numColorsSize
+	offset = BmpFileHeaderSize + dibSize + numColorsSize
 
-	if dibSize > 40 {
-		if 14+dibSize-4 > uint32(len(img)) {
+	if dibSize > BmpDibHeaderSize {
+		if BmpFileHeaderSize+dibSize-4 > uint32(len(img)) {
 			return nil, nil, 0,
 				FormatError(fmt.Sprintf("cannot get icc with dibsize/imglen %d %d", dibSize, len(img)))
 		}
 		// icc
-		offset += binary.LittleEndian.Uint32(img[14+dibSize-8 : 14+dibSize-4])
+		offset += binary.LittleEndian.Uint32(img[BmpFileHeaderSize+dibSize-8 : BmpFileHeaderSize+dibSize-4])
 	}
 	binary.LittleEndian.PutUint32(img[10:14], offset)
 
